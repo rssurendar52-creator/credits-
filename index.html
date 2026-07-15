@@ -2158,10 +2158,9 @@ function ltpcStr(L,T,P,C){const has=[L,T,P].some(v=>v!==''&&v!==null&&v!==undefi
 function basketChip(b){return b?`<span class="bk bk-${b}">${b}</span>`:'';}
 function completedCreditsByBasket(){
   const r={SC:0,PC:0,DE:0,OE:0};
-  subjects.forEach(s=>{if(s.status==='completed'&&r[s.basket]!==undefined)r[s.basket]+=s.credits;});
+  subjects.filter(s=>s.status==='completed'&&!isClearable(s)).forEach(s=>{if(r[s.basket]!==undefined)r[s.basket]+=Number(s.credits)||0;});
   const cls=annexureClassify();
-  cls.t1.concat(cls.t3).forEach(x=>{
-    if(x.dupReg)return;
+  cls.t3.forEach(x=>{
     const bk=(x.ns&&x.ns.basket)||(x.eq&&x.eq.basket)||'PC';
     const c=(x.eq&&x.eq.newCredits!==undefined&&x.eq.newCredits!==null)?x.eq.newCredits:(x.c.C||0);
     if(r[bk]!==undefined)r[bk]+=c;
@@ -2171,6 +2170,29 @@ function completedCreditsByBasket(){
 // v6.0: clearable grades F/NP/RC/I + course-not-offered
 const CLEARABLE_STATUS=['failed','np','rc','incomplete'];
 function isClearable(s){return CLEARABLE_STATUS.includes(s.status);}
+function getAnnexureTableIRows(){
+  const r=settings.readmitSem||0;
+  const maxSem=r>1?r-1:8;
+  return subjects.filter(s=>!s.additional&&s.sem>=1&&s.sem<=maxSem).sort((a,b)=>(a.sem-b.sem)||String(a.code).localeCompare(String(b.code)));
+}
+function getAnnexureAdditionalSubjects(){
+  const mappedIds=new Set(subjects.filter(s=>eqForSubject(s)).map(s=>s.id));
+  return subjects.filter(s=>{
+    if(s.additional&&s.status!=='completed')return true;
+    return !mappedIds.has(s.id)&&!isClearable(s)&&s.status!=='completed'&&s.sem>=1&&s.sem<=8;
+  }).sort((a,b)=>(a.sem-b.sem)||String(a.code).localeCompare(String(b.code)));
+}
+function getAnnexureTableIStatus(s){
+  const eq=eqForSubject(s);
+  const isFail=isClearable(s);
+  return {
+    eq,
+    left:{code:s.code,name:s.name,L:s.L,T:s.T,P:s.P,C:s.credits,bk:s.basket,grade:s.grade||'',term:s.term||''},
+    right:eq?{code:eq.oldCode,name:eq.oldName,L:eq.oldL,T:eq.oldT,P:eq.oldP,C:eq.oldCredits,bk:eq.basket||s.basket,grade:isFail?'FAIL':(s.grade||'—'),term:eq.term||s.term||'—'}:null,
+    isFail,
+    earnedCredits:(s.status==='completed'&&!isFail)?(Number(s.credits)||0):0
+  };
+}
 function gradeToStatus(g){g=String(g||'').toUpperCase().trim();
   if(g==='F')return'failed';if(g==='NP')return'np';if(g==='RC')return'rc';if(g==='I'||g==='NE'||g==='NC')return'incomplete';
   if(g)return'completed';return'';}
@@ -2180,14 +2202,12 @@ function committeeSummary(){
   const A=calcTotalCredits();
   const cls=annexureClassify();
   const cr=x=>(x.eq&&x.eq.newCredits!==undefined&&x.eq.newCredits!==null)?x.eq.newCredits:(x.c.C||0);
-  const fresh=x=>!x.dupReg;                                    // chip not duplicating a completed register subject
-  const B=subjects.filter(s=>s.status==='completed').reduce((a,s)=>a+s.credits,0)
-        + cls.t1.filter(fresh).reduce((a,x)=>a+cr(x),0);
-  const C=subjects.filter(s=>isClearable(s)).reduce((a,s)=>a+s.credits,0)
-        + cls.t2.filter(fresh).reduce((a,x)=>a+cr(x),0);
+  const B=subjects.filter(s=>s.status==='completed'&&!isClearable(s)).reduce((a,s)=>a+(Number(s.credits)||0),0);
+  const C=subjects.filter(s=>isClearable(s)).reduce((a,s)=>a+(Number(s.credits)||0),0)
+        + cls.t2.reduce((a,x)=>a+cr(x),0);
   const D=equivalences.filter(e=>e.type==='exempted').reduce((a,e)=>a+(e.newCredits||0),0)
-        + cls.t3.filter(fresh).reduce((a,x)=>a+cr(x),0);
-  const E=subjects.filter(s=>s.additional&&s.status!=='completed').reduce((a,s)=>a+s.credits,0);
+        + cls.t3.reduce((a,x)=>a+cr(x),0);
+  const E=getAnnexureAdditionalSubjects().reduce((a,s)=>a+(Number(s.credits)||0),0);
   const F=Math.max(0,A-B-C-D-E);
   return{A,B,C,D,E,F,total:B+C+D+E+F};
 }
@@ -4035,27 +4055,26 @@ function renderEquivReport(){
   const oyr=(student.origBatch||'').split(/[–-]/)[0].trim();
   let t1rows='',t1count=0,t1mapped=0,t1sumNew=0,t1sumEarned=0;
   for(let n=1;n<Math.min(rMax,9);n++){
-    const list=subjects.filter(s=>s.sem===n&&!s.additional&&!isClearable(s)).sort((a,b)=>(a.code||'').localeCompare(b.code||''));
+    const list=getAnnexureTableIRows().filter(s=>s.sem===n);
     if(!list.length)continue;
     t1rows+=`<tr style="background:var(--surface2)"><td colspan="12" style="font-weight:700;font-size:11px;letter-spacing:.5px">Semester ${n}</td></tr>`;
     list.forEach(s=>{
       t1count++;
-      const eq=eqForSubject(s);
-      const attended=!!(s.grade||s.term);
-      const left=eq?{code:eq.newCode,name:eq.newName,L:eq.newL,T:eq.newT,P:eq.newP,C:eq.newCredits,bk:eq.basket||s.basket}
-                   :{code:s.code,name:s.name,L:s.L,T:s.T,P:s.P,C:s.credits,bk:s.basket};
-      const hasRight=eq||attended;
+      const info=getAnnexureTableIStatus(s);
+      const hasRight=!!info.right;
+      const earned=(s.status==='completed'&&!isClearable(s))?Number(s.credits)||0:0;
       if(hasRight)t1mapped++;
-      t1sumNew+=Number(left.C)||0;
-      if(s.status==='completed')t1sumEarned+=Number(s.credits)||0;
-      const tag=(isClearable(s))?catTag('T2'):(!hasRight?catTag('T5'):`<span class="bk" style="background:var(--green-bg);color:var(--green);border-color:transparent">✓</span>`);
-      t1rows+=`<tr ondragover="if(dragChipId!==null){event.preventDefault();this.classList.add('rt-dragover');}" ondragleave="this.classList.remove('rt-dragover')" ondrop="this.classList.remove('rt-dragover');chipDrop(${s.id})" style="${(isClearable(s))?'background:'+CAT_META.T2[2]:(!hasRight?'background:'+CAT_META.T5[2]:'')}">
-        <td class="mono">${left.code||'—'}</td><td>${left.name}</td><td class="mono">${ltpcStr(left.L,left.T,left.P,left.C)}</td><td>${basketChip(left.bk)}</td>
-        <td style="text-align:center;color:var(--ink4)">${hasRight?'⇐':''}</td>
-        ${hasRight?`<td class="mono">${s.code||'—'}</td><td>${s.name}</td><td class="mono">${ltpcStr(s.L,s.T,s.P,s.credits)}</td><td>${basketChip(s.basket)}</td>
-          <td class="mono" style="font-weight:600;color:${s.status==='completed'?'var(--green)':'var(--red)'}">${s.grade||'—'}</td>
-          <td style="font-size:10.5px">${isClearable(s)?`<b style="color:var(--red)">${(s.status==='failed'?'FAIL':s.status==='np'?'NP':s.status==='rc'?'RC':'I')}</b>`:(s.term||'—')}${eq?` <button class="chip-x" style="margin-left:4px" title="Remove this mapping" onclick="removeEquivalenceById(${eq.id})">✕</button>`:''}</td>`
-        :`<td colspan="6" style="color:var(--ink4);font-style:italic">— not mapped —</td>`}
+      t1sumNew+=Number(s.credits)||0;
+      t1sumEarned+=earned;
+      const tag=(isClearable(s))?catTag('T2'):(hasRight?`<span class="bk" style="background:var(--green-bg);color:var(--green);border-color:transparent">✓</span>`:catTag('T5'));
+      t1rows+=`<tr ondragover="if(dragChipId!==null){event.preventDefault();this.classList.add('rt-dragover');}" ondragleave="this.classList.remove('rt-dragover')" ondrop="this.classList.remove('rt-dragover');chipDrop(${s.id})" style="${(isClearable(s))?'background:'+CAT_META.T2[2]:(hasRight?'':'background:'+CAT_META.T5[2])}">
+        <td class="mono">${info.left.code||'—'}</td><td>${info.left.name}</td><td class="mono">${ltpcStr(info.left.L,info.left.T,info.left.P,info.left.C)}</td><td>${basketChip(info.left.bk)}</td>
+        <td class="mono" style="font-weight:600;color:${s.status==='completed'&&!isClearable(s)?'var(--green)':'var(--red)'}">${(s.grade||'—').toUpperCase()}</td>
+        <td style="font-size:10.5px">${info.left.term||'—'}</td>
+        ${hasRight?`<td class="mono">${info.right.code||'—'}</td><td>${info.right.name}</td><td class="mono">${ltpcStr(info.right.L,info.right.T,info.right.P,info.right.C)}</td><td>${basketChip(info.right.bk)}</td>
+          <td class="mono" style="font-weight:600;color:${isClearable(s)?'var(--red)':'var(--green)'}">${info.right.grade||'—'}</td>
+          <td style="font-size:10.5px">${info.right.term||'—'}${info.eq?` <button class="chip-x" style="margin-left:4px" title="Remove this mapping" onclick="removeEquivalenceById(${info.eq.id})">✕</button>`:''}</td>`
+        :`<td colspan="6" style="color:var(--ink4);font-style:italic">— no old-PRC equivalent —</td>`}
         <td>${tag}</td></tr>`;
     });
   }
@@ -5737,29 +5756,24 @@ function renderAnnexureForm(){
   // Table I rows (official: left = New Readmitted PRC, right = old equivalent)
   let t1='',t1sumNew=0,t1sumEarned=0;
   for(let n=1;n<Math.min(rMax,9);n++){
-    const list=subjects.filter(s=>s.sem===n&&!s.additional&&!isClearable(s)).sort((a,b)=>(a.code||'').localeCompare(b.code||''));
+    const list=getAnnexureTableIRows().filter(s=>s.sem===n);
     if(!list.length)continue;
-    t1+=`<tr class="sect"><td colspan="15">Semester: ${n}</td></tr>`;
+    t1+=`<tr class="sect"><td colspan="16">Semester: ${n}</td></tr>`;
     list.forEach(s=>{
-      const eq=eqForSubject(s);
-      const att=!!(s.grade||s.term);
-      // LEFT = the course the student PASSED (marksheet / old PRC) with its passing term
-      const O=att?{code:s.code,name:s.name,l:s.L,t:s.T,p:s.P,c:s.credits,bk:s.basket,term:(s.term||'—')}
-             :(eq?{code:eq.oldCode,name:eq.oldName,l:eq.oldL,t:eq.oldT,p:eq.oldP,c:eq.oldCredits,bk:eq.basket||s.basket,term:(eq.term||'—')}:null);
-      // RIGHT = the New (Readmitted) PRC equivalent — identity until a catalog course is dropped
-      const N=eq?{code:eq.newCode,name:eq.newName,l:eq.newL,t:eq.newT,p:eq.newP,c:eq.newCredits,bk:eq.basket||s.basket}
-             :{code:s.code,name:s.name,l:s.L,t:s.T,p:s.P,c:s.credits,bk:s.basket};
-      t1sumNew+=Number((eq&&eq.newCredits!==undefined&&eq.newCredits!==null)?eq.newCredits:s.credits)||0;
-      if(s.status==='completed')t1sumEarned+=Number(s.credits)||0;
+      const info=getAnnexureTableIStatus(s);
+      const eq=info.eq;
+      const isFail=isClearable(s);
+      const left=info.left;
+      const right=info.right;
+      t1sumNew+=Number(s.credits)||0;
+      t1sumEarned+=info.earnedCredits;
       const drop=`ondragover="if(dragChipId!==null||catDragIdx!=null){event.preventDefault();this.classList.add('rt-dragover');}" ondragleave="this.classList.remove('rt-dragover')" ondrop="this.classList.remove('rt-dragover');annexDrop(${s.id})"`;
       t1+=`<tr ${drop} draggable="true" ondragstart="dragSubjectId=${s.id};event.dataTransfer.effectAllowed='move'" title="Drag to 🗑 to remove its mapping">
-        ${ O
-          ? `<td class="mono">${O.code||'—'}</td><td>${O.name} <button class="chip-x" title="Edit" onclick="editSubject(${s.id})">✎</button></td>
-             <td class="mono">${cell(O.l)||0}</td><td class="mono">${cell(O.t)||0}</td><td class="mono">${cell(O.p)||0}</td><td class="mono"><b>${O.c}</b></td><td><b>${O.bk||''}</b></td>
-             <td class="mono">${s.grade||'—'}</td><td>${isClearable(s)?`<b style="color:#8b1a1a">${(s.status==='failed'?'FAIL':s.status==='np'?'NP':s.status==='rc'?'RC':'I')}</b>`:O.term}</td>`
-          : `<td colspan="9" class="p-slot">⇠ marksheet course — auto-fills on upload, or drop an old-PRC chip here</td>`}
-        <td class="mono">${N.code||'—'}</td><td>${N.name}${eq?` <button class="chip-x" title="Remove mapping" onclick="removeEquivalenceById(${eq.id})">✕</button>`:` <button class="chip-x" title="Edit" onclick="editSubject(${s.id})">✎</button>`}</td>
-        <td class="mono">${cell(N.l)||0}</td><td class="mono">${cell(N.t)||0}</td><td class="mono">${cell(N.p)||0}</td><td class="mono"><b>${N.c}</b></td><td><b>${N.bk||''}</b></td>
+        <td class="mono">${left.code||'—'}</td><td>${left.name} <button class="chip-x" title="Edit" onclick="editSubject(${s.id})">✎</button></td>
+        <td class="mono">${cell(left.L)||0}</td><td class="mono">${cell(left.T)||0}</td><td class="mono">${cell(left.P)||0}</td><td class="mono"><b>${left.C}</b></td><td><b>${left.bk||''}</b></td>
+        <td class="mono">${(s.grade||'').toUpperCase()||'—'}</td><td>${isFail?`<b style="color:#8b1a1a">${(s.status==='failed'?'FAIL':s.status==='np'?'NP':s.status==='rc'?'RC':'I')}</b>`:left.term||'—'}</td>
+        ${right?`<td class="mono">${right.code||'—'}</td><td>${right.name}${eq?` <button class="chip-x" title="Remove mapping" onclick="removeEquivalenceById(${eq.id})">✕</button>`:''}</td>
+          <td class="mono">${cell(right.L)||0}</td><td class="mono">${cell(right.T)||0}</td><td class="mono">${cell(right.P)||0}</td><td class="mono"><b>${right.C}</b></td><td><b>${right.bk||''}</b></td>`:`<td colspan="8" class="p-slot">— no equivalent old-PRC course —</td>`}
       </tr>`;
     });
   }
@@ -5782,7 +5796,7 @@ function renderAnnexureForm(){
   const t2x=cls.t2.filter(x=>!seen.has((x.eq.newCode||'')||('~'+x.eq.newName)));
   const t2=[...regFnp.map(s=>({code:s.code,name:s.name,L:s.L,T:s.T,P:s.P,C:s.credits,bk:s.basket,fix:s.id,grade:s.grade})),
             ...t2x.map(x=>({code:x.eq.newCode,name:x.eq.newName+' (old '+(x.c.code||x.c.name)+')',L:x.eq.newL,T:x.eq.newT,P:x.eq.newP,C:x.eq.newCredits,bk:(x.ns&&x.ns.basket)||x.eq.basket,fix:null}))];
-  const addl=subjects.filter(s=>s.additional&&s.status!=='completed');
+  const addl=getAnnexureAdditionalSubjects();
   const t2Total=t2.reduce((a,x)=>a+(Number(x.C)||0),0);
   const addlTotal=addl.reduce((a,s)=>a+(Number(s.credits)||0),0);
   const un=poolVisibleChips().filter(c=>!c.mappedEq);
@@ -5796,13 +5810,13 @@ function renderAnnexureForm(){
     <tr><td>4.</td><td><b>Admission Batch and Last Semester attended</b></td><td>${student.origBatch||''}${r?', '+SEM_NAMES[Math.max(1,r-1)]:''}</td></tr>
     <tr><td>5.</td><td><b>Batch and Semester of Readmission</b></td><td>${student.currentBatch||''}${r?', '+SEM_NAMES[r]:''}, AY${settings.startYear+Math.floor((r-1)/2)}-${settings.startYear+Math.floor((r-1)/2)+1}</td></tr>
   </tbody></table>
-  <h3>I. Course Mapping: Semester-wise <span style="font-weight:400;font-size:11px">(Only up to the number of semesters the student has studied in the admission batch)</span> <button class="chip-x" title="Add a course to Table I" onclick="openAddTable1()">＋ Add course</button>${poolVisibleChips().length?` <button class="chip-x" title="Bring uploaded marksheet courses into Table I" onclick="promoteMarksheetToTable1()">📥 Add ${poolVisibleChips().length} marksheet course(s)</button>`:``}</h3>
+  <h3>I. Course Mapping: Semester-wise <span style="font-weight:400;font-size:11px">(All New Readmitted PRC courses in each semester on the left; equivalent old-prc courses on the right)</span> <button class="chip-x" title="Add a course to Table I" onclick="openAddTable1()">＋ Add course</button>${poolVisibleChips().length?` <button class="chip-x" title="Bring uploaded marksheet courses into Table I" onclick="promoteMarksheetToTable1()">📥 Add ${poolVisibleChips().length} marksheet course(s)</button>`:``}</h3>
   <table><thead>
-    <tr><th colspan="9" style="text-align:center">Courses passed as per the ${student.origBatch?student.origBatch.split(/[–-]/)[0]:'Old'} (Admission) PRC — from the marksheet</th>
-        <th colspan="7" style="text-align:center">Equivalent Courses in the New (Readmitted) ${student.currentBatch?student.currentBatch.split(/[–-]/)[0]:''} PRC — drag from the 🗃 catalog</th></tr>
-    <tr><th>Course Code</th><th>Course Name</th><th colspan="4" style="text-align:center">Credit Structure<br/>L&nbsp;&nbsp;T&nbsp;&nbsp;P&nbsp;&nbsp;C</th><th>Course Basket</th><th>Grade</th><th>Semester &amp; Month-Year of Passing (Mention ET/ST/MU)</th>
-        <th>Course Code</th><th>Course Name</th><th colspan="4" style="text-align:center">Credit Structure<br/>L&nbsp;&nbsp;T&nbsp;&nbsp;P&nbsp;&nbsp;C</th><th>Course Basket</th></tr>
-  </thead><tbody>${t1||`<tr><td colspan="16" class="p-slot">${poolVisibleChips().length?`<button class="chip-x" onclick="promoteMarksheetToTable1()">📥 Add ${poolVisibleChips().length} uploaded marksheet course(s) to Table I</button> &nbsp;·&nbsp; `:`Upload a marksheet from 📑 Marks, or `}<button class="chip-x" onclick="openAddTable1()">＋ Add a course manually</button></td></tr>`}
+    <tr><th colspan="9" style="text-align:center">New (Readmitted) PRC courses — semester-wise</th>
+        <th colspan="8" style="text-align:center">Equivalent Old PRC course / grade-card details</th></tr>
+    <tr><th>Course Code</th><th>Course Name</th><th colspan="4" style="text-align:center">Credit Structure<br/>L&nbsp;&nbsp;T&nbsp;&nbsp;P&nbsp;&nbsp;C</th><th>Basket</th><th>Grade</th><th>ET/ST/MU Month-Year</th>
+        <th>Course Code</th><th>Course Name</th><th colspan="4" style="text-align:center">Credit Structure<br/>L&nbsp;&nbsp;T&nbsp;&nbsp;P&nbsp;&nbsp;C</th><th>Basket</th><th>Result / Status</th></tr>
+  </thead><tbody>${t1||`<tr><td colspan="17" class="p-slot">${poolVisibleChips().length?`<button class="chip-x" onclick="promoteMarksheetToTable1()">📥 Add ${poolVisibleChips().length} uploaded marksheet course(s) to Table I</button> &nbsp;·&nbsp; `:`Upload a marksheet from 📑 Marks, or `}<button class="chip-x" onclick="openAddTable1()">＋ Add a course manually</button></td></tr>`}
   ${t1?`<tr class="tot"><td colspan="6">Total Number of credits Earned</td><td class="mono">${t1sumEarned}</td><td colspan="2"></td><td colspan="5" style="text-align:right">Total Number of credits (New PRC)</td><td class="mono">${t1sumNew}</td><td></td></tr>`:''}
   </tbody></table>
   <h3>II. Failed/NP Graded Courses as per Old PRC (if any) <button class="chip-x" title="Add a failed/NP course" onclick="openAddFailed()">＋</button></h3>
@@ -5819,7 +5833,7 @@ function renderAnnexureForm(){
     ${(t3rows||t3slots)?'':`<tr><td colspan="13" class="p-slot">no upcoming-semester courses in the register</td></tr>`}
     <tr class="tot"><td colspan="12">Total Number of credits</td><td class="mono">${cls.t3.reduce((a,x)=>a+crx(x),0)}</td></tr>
   </tbody></table>
-  <h3>IV. Additional Course(s) (if any) <span style="font-weight:400;font-size:11px">— need to be completed to meet the requirements as per New (Readmitted) PRC</span> <button class="chip-x" onclick="openAddAdditional()" title="Add additional course">＋</button></h3>
+  <h3>IV. Additional Course(s) (if any) <span style="font-weight:400;font-size:11px">— unmapped New PRC courses and any manually flagged additional requests</span> <button class="chip-x" onclick="openAddAdditional()" title="Add additional course">＋</button></h3>
   <table style="max-width:860px"><thead><tr><th style="width:36px">S.No</th><th>Course Code</th><th>Course Name</th><th colspan="4" style="text-align:center">Credit Structure L T P C</th><th>Semester in which it is offered/Basket</th></tr></thead><tbody>
     ${addl.map((s,i)=>`<tr class="dash-row-drag" draggable="true" ondragstart="dragSubjectId=${s.id}" title="Drag to 🗑 to remove from Table IV"><td>${i+1}</td><td class="mono">${s.code||'—'}</td><td>${s.name} <button class="chip-x" title="Edit" onclick="editSubject(${s.id})">✎</button> <button class="chip-x" title="Remove from Table IV" onclick="toggleAdditional(${s.id})">✕</button></td><td class="mono">${cell(s.L)||0}</td><td class="mono">${cell(s.T)||0}</td><td class="mono">${cell(s.P)||0}</td><td class="mono"><b>${s.credits}</b></td><td>S${s.sem} / ${s.basket||''}</td></tr>`).join('')||`<tr><td colspan="8" class="p-slot">none</td></tr>`}
     <tr class="tot"><td colspan="6">Total Credits</td><td class="mono">${addlTotal}</td><td></td></tr>

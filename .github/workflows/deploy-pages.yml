@@ -34,3 +34,11 @@ jobs:
           publish_branch: gh-pages
           # keep empty commit messages quiet
           commit_message: "Publish site to gh-pages: {{hash}}"
+
+      - name: Configure Pages site (set source to gh-pages)
+        if: ${{ secrets.PAGES_PAT != '' }}
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+          token: ${{ secrets.PAGES_PAT }}
+          source: '{"branch":"gh-pages","path":"/"}'
